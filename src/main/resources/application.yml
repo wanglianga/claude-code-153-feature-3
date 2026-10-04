@@ -44,6 +44,7 @@ waste:
     weigh-anomaly-threshold-pct: 20.0  # 称重偏差异常阈值（%）
     capacity-warn-ratio: 0.9     # 垃圾点容量预警比例（超过则不允许直接通过预约）
     late-tolerance-minutes: 30   # 车辆迟到容忍分钟数
+    overflow-compensation-default: 100.0  # 满溢投诉默认赔付/物业费减免金额（元）
 
 springdoc:
   swagger-ui:

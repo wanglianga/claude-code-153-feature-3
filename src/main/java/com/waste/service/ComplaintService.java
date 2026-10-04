@@ -33,7 +33,8 @@ public class ComplaintService {
     /** 发起投诉（异味/扬尘/消防通道/溢出/混入生活垃圾/车辆迟到/称重异常/费用争议） */
     @Transactional
     public Complaint create(Session user, ComplaintType type, Long appointmentId, Long registrationId,
-                            Long billId, String description) {
+                            Long billId, Long wastePointId, java.math.BigDecimal feeWaiverAmount,
+                            String description) {
         Complaint c = new Complaint();
         c.setComplaintNo(NoGen.of("CPL"));
         c.setComplainantId(user.userId());
@@ -41,6 +42,8 @@ public class ComplaintService {
         c.setType(type);
         c.setTargetAppointmentId(appointmentId);
         c.setTargetRegistrationId(registrationId);
+        c.setWastePointId(wastePointId);
+        c.setFeeWaiverAmount(feeWaiverAmount);
         c.setDescription(description);
 
         if (type == ComplaintType.FEE_DISPUTE) {
@@ -54,7 +57,8 @@ public class ComplaintService {
         }
         complaintRepo.save(c);
         traceLogger.record(appointmentId, "COMPLAINT", c.getId(), user, "COMPLAINT_CREATE",
-                "投诉[" + type + "]: " + description);
+                "投诉[" + type + "]: " + description
+                        + (feeWaiverAmount != null ? "，诉求减免物业费 " + feeWaiverAmount + " 元" : ""));
         eventBus.publish(RabbitConfig.RK_COMPLAINT_CREATED, c.getId());
         return c;
     }
@@ -66,6 +70,10 @@ public class ComplaintService {
             throw new BizException("处理动作只能是 PROCESSING / RESOLVED / REJECTED");
         }
         Complaint c = complaintRepo.findById(id).orElseThrow(() -> new BizException(404, "投诉不存在"));
+        if (c.getCompensationId() != null) {
+            throw new BizException("该投诉已完成赔付定责（赔付单 #" + c.getCompensationId()
+                    + "），处理结论以赔付单为准，不能重复处理");
+        }
         c.setStatus(action);
         c.setHandlerId(property.userId());
         c.setHandlerName(property.name());

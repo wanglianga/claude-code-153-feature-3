@@ -20,4 +20,6 @@ public class WasteProperties {
     private BigDecimal weighAnomalyThresholdPct = new BigDecimal("20.0");
     private BigDecimal capacityWarnRatio = new BigDecimal("0.9");
     private int lateToleranceMinutes = 30;
+    /** 垃圾点满溢投诉默认赔付/物业费减免金额（元），物业定责时可调整 */
+    private BigDecimal overflowCompensationDefault = new BigDecimal("100.0");
 }

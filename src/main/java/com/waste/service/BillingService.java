@@ -35,6 +35,7 @@ public class BillingService {
     private final DailyReportRepository reportRepo;
     private final RenovationRegistrationRepository regRepo;
     private final DepositDeductionRepository deductionRepo;
+    private final com.waste.repository.CompensationRepository compensationRepo;
     private final WasteProperties props;
     private final TraceLogger traceLogger;
     private final TraceUpdater traceUpdater;
@@ -165,6 +166,15 @@ public class BillingService {
             regRepo.save(reg);
             saveDeduction(reg.getId(), null, bill.getId(), "REFUND", bill.getAmount().negate(),
                     "施工队缴清罚款，返还业主押金（账单 " + bill.getBillNo() + "）", reg.getDepositBalance());
+        }
+        // 业主补缴满溢赔付押金 → 押金回补，关闭补缴挂账
+        if (bill.getBillType() == BillType.OWNER && compensationRepo.existsByTopUpBillId(bill.getId())
+                && bill.getRegistrationId() != null) {
+            RenovationRegistration reg = regRepo.findById(bill.getRegistrationId()).orElseThrow();
+            reg.setDepositBalance(reg.getDepositBalance().add(bill.getAmount()));
+            regRepo.save(reg);
+            saveDeduction(reg.getId(), null, bill.getId(), "REFUND", bill.getAmount().negate(),
+                    "业主补缴满溢赔付押金，押金回补（账单 " + bill.getBillNo() + "）", reg.getDepositBalance());
         }
         traceLogger.record(bill.getAppointmentId(), "BILL", bill.getId(), finance, "BILL_PAY",
                 "账单 " + bill.getBillNo() + "（" + bill.getBillType() + "）已结清，金额 " + bill.getAmount() + " 元");
