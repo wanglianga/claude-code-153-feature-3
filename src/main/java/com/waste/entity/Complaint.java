@@ -32,6 +32,11 @@ public class Complaint {
     private Long targetAppointmentId;   // 关联预约（可空）
     private Long targetRegistrationId;  // 关联登记（可空）
     private Long billId;                // 费用争议关联账单（可空）
+    private Long wastePointId;          // 满溢占车位投诉关联垃圾点（可空）
+
+    /** 投诉人主张的赔付/物业费减免金额（满溢占车位投诉） */
+    @Column(precision = 12, scale = 2)
+    private java.math.BigDecimal claimAmount;
 
     @Column(nullable = false, length = 512)
     private String description;

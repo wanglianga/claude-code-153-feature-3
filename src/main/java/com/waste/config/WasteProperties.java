@@ -20,4 +20,5 @@ public class WasteProperties {
     private BigDecimal weighAnomalyThresholdPct = new BigDecimal("20.0");
     private BigDecimal capacityWarnRatio = new BigDecimal("0.9");
     private int lateToleranceMinutes = 30;
+    private int compensationWindowDays = 7;   // 满溢占车位投诉定责的调查窗口（天）
 }

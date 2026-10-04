@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 端到端验证脚本：覆盖登记→上报→审核→派单→称重→处置→计费→投诉→追责全链路
+# 端到端验证脚本：覆盖登记→上报→审核→派单→称重→处置→计费→投诉→追责全链路，
+# 以及满溢占车位投诉的证据链定责、赔付责任分摊（清运扣款/押金扣除补缴/物业承担）与四方说明
 # 前置：应用已启动（默认 http://localhost:8080），数据库为全新状态（演示数据已初始化）
 set -uo pipefail
 
@@ -11,6 +12,14 @@ check() { # $1=描述 $2=实际内容 $3=期望包含的子串
     PASS=$((PASS+1)); echo "  ✔ $1"
   else
     FAIL=$((FAIL+1)); echo "  ✘ $1"; echo "    期望包含: $3"; echo "    实际: $(echo "$2" | head -c 400)"
+  fi
+}
+
+check_absent() { # $1=描述 $2=实际内容 $3=不应包含的子串
+  if [[ "$2" != *"$3"* ]]; then
+    PASS=$((PASS+1)); echo "  ✔ $1"
+  else
+    FAIL=$((FAIL+1)); echo "  ✘ $1"; echo "    不应包含: $3"; echo "    实际: $(echo "$2" | head -c 400)"
   fi
 }
 
@@ -162,6 +171,109 @@ DC=$(curl -s "$BASE/api/dashboard/collector" -H "$AUTH_COLL")
 check "清运看板-派单与车辆" "$DC" '"vehicles"'
 DF=$(curl -s "$BASE/api/dashboard/finance?period=$PERIOD" -H "$AUTH_FIN")
 check "财务看板-四类账单汇总" "$DF" '"PROPERTY_ADVANCE"'
+
+echo "== 6. 投诉赔付与责任分摊：满溢占车位索赔 =="
+PLUS2D=$(date -d "+2 days" +%F)
+PLANDATE=$PLUS2D
+# 沪B67890(车2) 尾号 0 周五限行、沪C11116(车3) 尾号 6 周一限行：周五用车3，其余用车2
+if [ "$(date +%u)" = "5" ]; then VEH=3; else VEH=2; fi
+if [ "$VEH" = "2" ] && [ "$(date -d "$PLANDATE" +%u)" = "5" ]; then PLANDATE=$(date -d "+3 days" +%F); fi
+PAST3H=$(date -d "-3 hours" +%FT%T)
+
+echo "-- 6a. 主因清运延误 → 赔付计入清运公司履约扣款 --"
+R5=$(curl -s -X POST "$BASE/api/reports" -H "$AUTH_WORKER" -H "$CT" -d "{\"registrationId\":1,\"reportDate\":\"$TOMORROW\",\"bagCount\":6,\"extraBagCount\":0,\"stackingLocation\":\"1号楼垃圾点旁\",\"wastePointId\":1,\"containsWood\":true,\"containsGlass\":false,\"containsTile\":false,\"containsMixedHousehold\":false}")
+REPORT5=$(echo "$R5" | J '.data.id')
+check "业主1再次上报6袋(1号楼点)" "$R5" '"status":"PENDING"'
+A5=$(curl -s -X POST "$BASE/api/appointments/review" -H "$AUTH_PROP" -H "$CT" -d "{\"reportId\":$REPORT5,\"approve\":true,\"apptDate\":\"$TODAY\",\"timeSlot\":\"PM\",\"comment\":\"同意清运\"}")
+APPT5=$(echo "$A5" | J '.data.id')
+check "物业审核通过" "$A5" '"status":"APPROVED"'
+D5=$(curl -s -X POST "$BASE/api/dispatches" -H "$AUTH_COLL" -H "$CT" -d "{\"appointmentId\":$APPT5,\"vehicleId\":$VEH,\"plannedArrival\":\"$PAST3H\"}")
+DISP5=$(echo "$D5" | J '.data.id')
+check "清运公司派单(计划3小时前)" "$D5" '"status":"DISPATCHED"'
+ARR5=$(curl -s -X POST "$BASE/api/dispatches/$DISP5/arrive" -H "$AUTH_COLL" -H "$CT" -d "{\"actualArrival\":\"$NOW\"}")
+check "司机迟到3小时到场" "$ARR5" '"lateFlag":true'
+
+BAD1=$(curl -s -X POST "$BASE/api/complaints" -H "Authorization: Bearer $OWNER2_T" -H "$CT" -d '{"type":"OVERFLOW_PARKING","claimAmount":100,"description":"缺少垃圾点"}')
+check "满溢占车位投诉缺垃圾点被拒" "$BAD1" "wastePointId"
+BAD2=$(curl -s -X POST "$BASE/api/complaints" -H "Authorization: Bearer $OWNER2_T" -H "$CT" -d '{"type":"OVERFLOW_PARKING","wastePointId":1,"description":"缺少主张金额"}')
+check "满溢占车位投诉缺主张金额被拒" "$BAD2" "claimAmount"
+CP=$(curl -s -X POST "$BASE/api/complaints" -H "Authorization: Bearer $OWNER2_T" -H "$CT" -d '{"type":"OVERFLOW_PARKING","wastePointId":1,"claimAmount":200,"description":"垃圾点长期满溢，私家车车位被占，要求减免物业费"}')
+CPL2=$(echo "$CP" | J '.data.id')
+check "邻居发起满溢占车位索赔投诉" "$CP" '"type":"OVERFLOW_PARKING"'
+
+AS=$(curl -s -X POST "$BASE/api/complaints/$CPL2/assess" -H "$AUTH_PROP" -H "$CT" -d '{}')
+check "串联证据自动定责为清运公司" "$AS" '"liableParty":"COLLECTOR"'
+check "生成赔付责任分摊单号" "$AS" '"caseNo":"CMP'
+check "扣款来源为清运公司履约扣款" "$AS" '履约扣款'
+check "证据链含预约记录" "$AS" 'appointments'
+check "证据链含清运迟到" "$AS" 'lateDispatches'
+check "证据链含施工队实际堆放" "$AS" 'reports'
+CST=$(curl -s "$BASE/api/complaints" -H "$AUTH_PROP" | jq -r '.data[] | select(.id=='"$CPL2"').status')
+check "定责后投诉联动办结" "$CST" "RESOLVED"
+
+DBILLS=$(curl -s "$BASE/api/bills?type=COLLECTOR_DEDUCTION" -H "$AUTH_FIN")
+check "清运公司履约扣款单200元" "$DBILLS" '"amount":200.00'
+check "扣款单挂到绿洁清运" "$DBILLS" '绿洁清运'
+DBILL=$(echo "$DBILLS" | J '[.data[] | select(.amount==200)][0].id')
+PAYD=$(curl -s -X POST "$BASE/api/bills/$DBILL/pay" -H "$AUTH_FIN")
+check "财务确认履约扣款" "$PAYD" '"status":"PAID"'
+DP2=$(curl -s "$BASE/api/dashboard/property" -H "$AUTH_PROP")
+check "清运履约看板计入赔付扣款" "$DP2" '"compensationDeductions":200.00'
+
+V_NEIGH=$(curl -s "$BASE/api/complaints/$CPL2/compensation" -H "Authorization: Bearer $OWNER2_T")
+check "投诉人看到处理结果说明" "$V_NEIGH" "neighborStatement"
+check "投诉人看到物业费减免入账" "$V_NEIGH" "物业费减免"
+check_absent "投诉人不可见财务说明" "$V_NEIGH" "financeStatement"
+V_COLL=$(curl -s "$BASE/api/complaints/$CPL2/compensation" -H "$AUTH_COLL")
+check "清运公司看到履约扣款说明" "$V_COLL" "collectorStatement"
+V_FIN=$(curl -s "$BASE/api/complaints/$CPL2/compensation" -H "$AUTH_FIN")
+check "财务看到扣款来源" "$V_FIN" "扣款来源"
+check "财务看到入账去向" "$V_FIN" "入账去向"
+V_NONE=$(curl -s "$BASE/api/complaints/$CPL2/compensation" -H "$AUTH_OWNER")
+check "无关人员不可见赔付单" "$V_NONE" "无权查看"
+
+echo "-- 6b. 主因业主超量未申报 → 押金扣除并通知补缴 --"
+R6=$(curl -s -X POST "$BASE/api/reports" -H "$AUTH_WORKER" -H "$CT" -d "{\"registrationId\":$REG2,\"reportDate\":\"$PLUS2D\",\"bagCount\":5,\"extraBagCount\":0,\"stackingLocation\":\"3号楼临时堆放点\",\"wastePointId\":3,\"containsWood\":false,\"containsGlass\":false,\"containsTile\":true,\"containsMixedHousehold\":false}")
+REPORT6=$(echo "$R6" | J '.data.id')
+check "业主2施工队上报5袋(3号楼点)" "$R6" '"status":"PENDING"'
+A6=$(curl -s -X POST "$BASE/api/appointments/review" -H "$AUTH_PROP" -H "$CT" -d "{\"reportId\":$REPORT6,\"approve\":true,\"apptDate\":\"$PLANDATE\",\"timeSlot\":\"AM\",\"comment\":\"同意清运\"}")
+APPT6=$(echo "$A6" | J '.data.id')
+check "物业审核通过" "$A6" '"status":"APPROVED"'
+D6=$(curl -s -X POST "$BASE/api/dispatches" -H "$AUTH_COLL" -H "$CT" -d "{\"appointmentId\":$APPT6,\"vehicleId\":$VEH,\"plannedArrival\":\"${PLANDATE}T09:00:00\"}")
+DISP6=$(echo "$D6" | J '.data.id')
+check "清运公司派单" "$D6" '"status":"DISPATCHED"'
+ARR6=$(curl -s -X POST "$BASE/api/dispatches/$DISP6/arrive" -H "$AUTH_COLL" -H "$CT" -d "{\"actualArrival\":\"${PLANDATE}T09:05:00\"}")
+check "司机准时到场" "$ARR6" '"lateFlag":false'
+W6=$(curl -s -X POST "$BASE/api/weigh-records" -H "$AUTH_COLL" -H "$CT" -d "{\"dispatchId\":$DISP6,\"emptyWeightKg\":5000,\"loadedWeightKg\":5250,\"entryTime\":\"$NOW\",\"exitTime\":\"$(date +%FT%T)\",\"photos\":\"http://img/6.jpg\"}")
+check "净重250kg远超申报125kg→异常" "$W6" '"anomalyFlag":true'
+sleep 1  # 等待计费：业主账单40元，REG2押金 320-40=280
+
+CP2=$(curl -s -X POST "$BASE/api/complaints" -H "$AUTH_OWNER" -H "$CT" -d '{"type":"OVERFLOW_PARKING","wastePointId":3,"claimAmount":150,"description":"3号楼堆放点满溢占车位，要求减免物业费"}')
+CPL3=$(echo "$CP2" | J '.data.id')
+check "邻居张三发起满溢占车位投诉" "$CP2" '"type":"OVERFLOW_PARKING"'
+AS2=$(curl -s -X POST "$BASE/api/complaints/$CPL3/assess" -H "$AUTH_PROP" -H "$CT" -d '{}')
+check "串联证据自动定责为业主" "$AS2" '"liableParty":"OWNER"'
+check "认定超量堆放未申报" "$AS2" '超量'
+REG2B=$(curl -s "$BASE/api/registrations/$REG2" -H "$AUTH_PROP")
+check "赔付从押金扣除150(280→130)" "$REG2B" '"depositBalance":130.00'
+DEP2=$(curl -s "$BASE/api/registrations/$REG2/deposit-log" -H "$AUTH_PROP")
+check "押金流水含赔付扣款COMP" "$DEP2" '"type":"COMP"'
+RBILLS=$(curl -s "$BASE/api/bills?type=OWNER_REPLENISH" -H "$AUTH_FIN")
+check "生成业主押金补缴单150元" "$RBILLS" '"amount":150.00'
+RBILL=$(echo "$RBILLS" | J '[.data[] | select(.amount==150)][0].id')
+V_OWNER=$(curl -s "$BASE/api/complaints/$CPL3/compensation" -H "Authorization: Bearer $OWNER2_T")
+check "责任业主看到补缴通知" "$V_OWNER" "补缴"
+V_FIN2=$(curl -s "$BASE/api/complaints/$CPL3/compensation" -H "$AUTH_FIN")
+check "财务看到押金扣款来源" "$V_FIN2" "装修押金"
+check "财务看到称重超量证据" "$V_FIN2" "weighRecords"
+V_NEIGH2=$(curl -s "$BASE/api/complaints/$CPL3/compensation" -H "$AUTH_OWNER")
+check "投诉人张三看到处理结果" "$V_NEIGH2" "neighborStatement"
+PAYR=$(curl -s -X POST "$BASE/api/bills/$RBILL/pay" -H "$AUTH_FIN")
+check "业主补缴押金结清" "$PAYR" '"status":"PAID"'
+REG2C=$(curl -s "$BASE/api/registrations/$REG2" -H "$AUTH_PROP")
+check "补缴后押金回补(130→280)" "$REG2C" '"depositBalance":280.00'
+AS3=$(curl -s -X POST "$BASE/api/complaints/$CPL3/assess" -H "$AUTH_PROP" -H "$CT" -d '{}')
+check "重复定责被拒(幂等)" "$AS3" "重复定责"
 
 echo ""
 echo "==================================="

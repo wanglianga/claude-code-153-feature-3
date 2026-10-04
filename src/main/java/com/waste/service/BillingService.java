@@ -166,6 +166,14 @@ public class BillingService {
             saveDeduction(reg.getId(), null, bill.getId(), "REFUND", bill.getAmount().negate(),
                     "施工队缴清罚款，返还业主押金（账单 " + bill.getBillNo() + "）", reg.getDepositBalance());
         }
+        // 业主缴清押金补缴单（投诉赔付）→ 押金回补
+        if (bill.getBillType() == BillType.OWNER_REPLENISH && bill.getRegistrationId() != null) {
+            RenovationRegistration reg = regRepo.findById(bill.getRegistrationId()).orElseThrow();
+            reg.setDepositBalance(reg.getDepositBalance().add(bill.getAmount()));
+            regRepo.save(reg);
+            saveDeduction(reg.getId(), null, bill.getId(), "REPLENISH", bill.getAmount().negate(),
+                    "业主补缴押金到账（账单 " + bill.getBillNo() + "）", reg.getDepositBalance());
+        }
         traceLogger.record(bill.getAppointmentId(), "BILL", bill.getId(), finance, "BILL_PAY",
                 "账单 " + bill.getBillNo() + "（" + bill.getBillType() + "）已结清，金额 " + bill.getAmount() + " 元");
         return bill;

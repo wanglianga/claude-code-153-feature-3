@@ -10,5 +10,6 @@ public enum ComplaintType {
     LATE_VEHICLE,   // 车辆迟到
     WEIGH_ANOMALY,  // 称重数据异常
     FEE_DISPUTE,    // 费用争议
+    OVERFLOW_PARKING, // 垃圾点满溢占用车位（要求减免物业费，需定责赔付）
     OTHER
 }

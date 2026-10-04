@@ -93,6 +93,7 @@ public class DashboardService {
         Map<String, List<DispatchOrder>> byCompany = dispatchRepo.findAll().stream()
                 .collect(Collectors.groupingBy(DispatchOrder::getCompanyName));
         List<WeighRecord> weighs = weighRepo.findAll();
+        List<Bill> deductionBills = billRepo.findByBillTypeOrderByIdDesc(BillType.COLLECTOR_DEDUCTION);
         List<Map<String, Object>> perf = new ArrayList<>();
         for (var entry : byCompany.entrySet()) {
             List<DispatchOrder> ds = entry.getValue();
@@ -102,6 +103,10 @@ public class DashboardService {
             long anomalies = weighs.stream()
                     .filter(w -> dispatchIds.contains(w.getDispatchId()) && Boolean.TRUE.equals(w.getAnomalyFlag()))
                     .count();
+            // 投诉赔付履约扣款合计
+            BigDecimal deductionTotal = deductionBills.stream()
+                    .filter(b -> b.getPartyName().equals(entry.getKey()))
+                    .map(Bill::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("company", entry.getKey());
             m.put("totalDispatches", ds.size());
@@ -111,6 +116,7 @@ public class DashboardService {
                     : BigDecimal.valueOf(arrived - late).multiply(BigDecimal.valueOf(100))
                     .divide(BigDecimal.valueOf(arrived), 1, RoundingMode.HALF_UP).doubleValue() / 100.0);
             m.put("weighAnomalies", anomalies);
+            m.put("compensationDeductions", deductionTotal);
             perf.add(m);
         }
         return perf;
